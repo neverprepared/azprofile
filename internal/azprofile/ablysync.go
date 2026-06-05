@@ -80,6 +80,7 @@ func PublishProfile(ctx context.Context, profile string) error {
 	if err := ch.Publish(ctx, ablyMessageName, payload); err != nil {
 		return fmt.Errorf("ably publish: %w", err)
 	}
+	RecordPublish(name)
 	fmt.Printf("%s%s%s Published %s%s%s (seq %d) → %s%s%s\n",
 		ui.Green, ui.Check, ui.NC,
 		ui.Bold, name, ui.NC, seq,
@@ -235,6 +236,7 @@ func applyEnvelope(env *Envelope, name, dir string) error {
 	if err := env.ApplyTo(dir); err != nil {
 		return err
 	}
+	RecordReceive(name)
 	fmt.Printf("%s%s%s Applied %s%s%s from %s%s%s seq %d%s\n",
 		ui.Green, ui.Check, ui.NC,
 		ui.Bold, name, ui.NC,

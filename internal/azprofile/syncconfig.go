@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 )
 
 // SyncConfig is the plaintext schema persisted (encrypted) at ConfigPath().
@@ -19,7 +20,9 @@ type SyncConfig struct {
 
 // SyncState is the plaintext per-profile counter persisted at StatePath().
 type SyncState struct {
-	MonotonicSeq map[string]int64 `json:"monotonic_seq"`
+	MonotonicSeq map[string]int64            `json:"monotonic_seq"`
+	LastPublish  map[string]time.Time        `json:"last_publish,omitempty"`
+	LastReceive  map[string]time.Time        `json:"last_receive,omitempty"`
 }
 
 // ConfigDir is the directory holding sync config + state.
@@ -82,6 +85,32 @@ func SaveConfig(c *SyncConfig) error {
 		return err
 	}
 	return atomicWrite(ConfigPath(), blob, 0o600)
+}
+
+// RecordPublish stamps the last-publish time for a profile. Best-effort — errors are swallowed.
+func RecordPublish(profile string) {
+	s, err := LoadState()
+	if err != nil {
+		return
+	}
+	if s.LastPublish == nil {
+		s.LastPublish = map[string]time.Time{}
+	}
+	s.LastPublish[profile] = time.Now().UTC()
+	_ = SaveState(s)
+}
+
+// RecordReceive stamps the last-receive time for a profile. Best-effort — errors are swallowed.
+func RecordReceive(profile string) {
+	s, err := LoadState()
+	if err != nil {
+		return
+	}
+	if s.LastReceive == nil {
+		s.LastReceive = map[string]time.Time{}
+	}
+	s.LastReceive[profile] = time.Now().UTC()
+	_ = SaveState(s)
 }
 
 func LoadState() (*SyncState, error) {
