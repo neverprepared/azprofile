@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -26,12 +27,15 @@ func main() {
 		useCmd(),
 		currentCmd(),
 		initCmd(),
+		deleteCmd(),
 		loginCmd(),
 		whoamiCmd(),
+		setupCmd(),
 		cronCmd(),
 		refreshCmd(),
 		syncCmd(),
 		pimCmd(),
+		doctorCmd(),
 		updateCmd(),
 	)
 
@@ -64,7 +68,7 @@ func useCmd() *cobra.Command {
 func currentCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "current",
-		Short: "Show active profile",
+		Short: "Show active profile name (scriptable)",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			azprofile.Current()
 			return nil
@@ -73,12 +77,26 @@ func currentCmd() *cobra.Command {
 }
 
 func initCmd() *cobra.Command {
-	return &cobra.Command{
+	var login bool
+	cmd := &cobra.Command{
 		Use:   "init <name>",
-		Short: "Create a profile and login",
+		Short: "Create a new profile",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return azprofile.Init(args[0])
+			return azprofile.Init(args[0], login)
+		},
+	}
+	cmd.Flags().BoolVar(&login, "login", false, "Run az login after creating the profile")
+	return cmd
+}
+
+func deleteCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "delete <name>",
+		Short: "Delete a profile",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return azprofile.Delete(args[0])
 		},
 	}
 }
@@ -101,119 +119,42 @@ func loginCmd() *cobra.Command {
 func whoamiCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "whoami",
-		Short: "Show active account details",
+		Short: "Show the active identity (profile + Azure account)",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return azprofile.Whoami()
 		},
 	}
 }
 
-func cronCmd() *cobra.Command {
-	c := &cobra.Command{
-		Use:   "cron",
-		Short: "Manage token-refresh cron entries",
-	}
+// setupCmd runs the global, idempotent wizard for encryption key + Ably config.
+// Operates on machine-wide state (keychain + config.enc), not per-profile.
+func setupCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "setup",
+		Short: "One-time wizard: configure encryption key and Ably sync",
+		Long: `Interactive wizard for global sync setup. Run once per machine.
 
-	install := &cobra.Command{
-		Use:   "install [profile] [schedule]",
-		Short: "Install a refresh cron (all profiles or one)",
-		Args:  cobra.MaximumNArgs(2),
+Sender (first machine):
+  azprofile setup          # generates key, sets Ably config
+  azprofile sync export-key --confirm   # copy hex to receiver
+
+Receiver (other machines):
+  azprofile sync join      # import key + Ably config in one shot`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			profile, schedule := "", ""
-			if len(args) >= 1 {
-				profile = args[0]
-			}
-			if len(args) >= 2 {
-				schedule = args[1]
-			}
-			return azprofile.CronInstall(profile, schedule)
+			return azprofile.SetupWizard()
 		},
 	}
-	remove := &cobra.Command{
-		Use:   "remove [profile]",
-		Short: "Remove cron (specific profile, or all if omitted)",
-		Args:  cobra.MaximumNArgs(1),
+}
+
+func doctorCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "doctor",
+		Short: "Check that all dependencies and configuration are in place",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			profile := ""
-			if len(args) == 1 {
-				profile = args[0]
-			}
-			return azprofile.CronRemove(profile)
-		},
-	}
-	status := &cobra.Command{
-		Use:   "status",
-		Short: "Show installed crons",
-		RunE: func(cmd *cobra.Command, args []string) error {
-			azprofile.CronStatus()
+			azprofile.Doctor()
 			return nil
 		},
 	}
-
-	c.AddCommand(install, remove, status, cronPIMCmd())
-	return c
-}
-
-func cronPIMCmd() *cobra.Command {
-	c := &cobra.Command{
-		Use:   "pim",
-		Short: "Manage daily PIM role activation crons",
-	}
-
-	var (
-		pimSchedule     string
-		pimDuration     int
-		pimReason       string
-		pimTicketSystem string
-		pimTicketNumber string
-		pimAll          bool
-		pimType         string
-		pimRole         string
-	)
-
-	install := &cobra.Command{
-		Use:   "install <profile> <role>... | <profile> --all",
-		Short: "Install a cron that activates PIM roles for a profile",
-		Long:  "Installs a daily cron that refreshes tokens and activates PIM role assignments. Pass role names as positional args, or --all to activate every eligibility (filtered by --type / --role).",
-		Args:  cobra.MinimumNArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			profile := args[0]
-			roles := args[1:]
-			return azprofile.CronPIMInstall(profile, pimSchedule, roles, azprofile.PIMCronOpts{
-				All:          pimAll,
-				Type:         pimType,
-				Role:         pimRole,
-				Duration:     pimDuration,
-				Reason:       pimReason,
-				TicketSystem: pimTicketSystem,
-				TicketNumber: pimTicketNumber,
-			})
-		},
-	}
-	install.Flags().StringVar(&pimSchedule, "schedule", "", "Cron schedule (default \"30 8 * * *\")")
-	install.Flags().IntVarP(&pimDuration, "duration", "d", azprofile.DefaultPIMDuration, "Activation duration in minutes")
-	install.Flags().StringVar(&pimReason, "reason", azprofile.DefaultPIMReason, "Activation reason")
-	install.Flags().StringVar(&pimTicketSystem, "ticket-system", "", "Ticket system name")
-	install.Flags().StringVar(&pimTicketNumber, "ticket-number", "", "Ticket number")
-	install.Flags().BoolVar(&pimAll, "all", false, "Activate every eligible assignment (filtered by --type / --role)")
-	install.Flags().StringVarP(&pimType, "type", "t", "", "With --all: restrict to all | resource | role | group")
-	install.Flags().StringVarP(&pimRole, "role", "r", "", "With --all: only activate eligibilities whose role name matches this")
-
-	remove := &cobra.Command{
-		Use:   "remove [profile]",
-		Short: "Remove PIM cron (specific profile, or all if omitted)",
-		Args:  cobra.MaximumNArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			profile := ""
-			if len(args) == 1 {
-				profile = args[0]
-			}
-			return azprofile.CronPIMRemove(profile)
-		},
-	}
-
-	c.AddCommand(install, remove)
-	return c
 }
 
 func refreshCmd() *cobra.Command {
@@ -250,6 +191,126 @@ func updateCmd() *cobra.Command {
 	return c
 }
 
+// ── cron ─────────────────────────────────────────────────────────────────────
+
+func cronCmd() *cobra.Command {
+	c := &cobra.Command{
+		Use:   "cron",
+		Short: "Manage scheduled automation (token refresh, PIM activation)",
+	}
+	c.AddCommand(cronRefreshCmd(), cronPIMCmd(), cronStatusCmd())
+	return c
+}
+
+func cronStatusCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "status",
+		Short: "Show installed cron entries",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			azprofile.CronStatus()
+			return nil
+		},
+	}
+}
+
+func cronRefreshCmd() *cobra.Command {
+	c := &cobra.Command{
+		Use:   "refresh",
+		Short: "Manage token-refresh cron entries",
+		Long:  "Install or remove the hourly cron that refreshes Azure tokens. When Ably sync is configured the refresh cron also auto-publishes the updated profile.",
+	}
+
+	install := &cobra.Command{
+		Use:   "install [profile] [schedule]",
+		Short: "Install a refresh cron (all profiles or one)",
+		Args:  cobra.MaximumNArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			profile, schedule := "", ""
+			if len(args) >= 1 {
+				profile = args[0]
+			}
+			if len(args) >= 2 {
+				schedule = args[1]
+			}
+			return azprofile.CronInstall(profile, schedule)
+		},
+	}
+	remove := &cobra.Command{
+		Use:   "remove [profile]",
+		Short: "Remove refresh cron (specific profile, or all if omitted)",
+		Args:  cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			profile := ""
+			if len(args) == 1 {
+				profile = args[0]
+			}
+			return azprofile.CronRemove(profile)
+		},
+	}
+	c.AddCommand(install, remove)
+	return c
+}
+
+func cronPIMCmd() *cobra.Command {
+	c := &cobra.Command{
+		Use:   "pim",
+		Short: "Manage daily PIM role activation crons",
+	}
+
+	install := &cobra.Command{
+		Use:   "install <profile> <role>... | <profile> --all",
+		Short: "Install a cron that activates PIM roles for a profile",
+		Long:  "Installs a daily cron that refreshes tokens and activates PIM role assignments. Pass role names as positional args, or --all to activate every eligibility (filtered by --type / --role).",
+		Args:  cobra.MinimumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			profile := args[0]
+			roles := args[1:]
+			opts := azprofile.PIMCronOpts{}
+			opts.All, _ = cmd.Flags().GetBool("all")
+			opts.Type, _ = cmd.Flags().GetString("type")
+			opts.Role, _ = cmd.Flags().GetString("role")
+			opts.Duration, _ = cmd.Flags().GetInt("duration")
+			opts.Reason, _ = cmd.Flags().GetString("reason")
+			opts.TicketSystem, _ = cmd.Flags().GetString("ticket-system")
+			opts.TicketNumber, _ = cmd.Flags().GetString("ticket-number")
+			schedule, _ := cmd.Flags().GetString("schedule")
+			return azprofile.CronPIMInstall(profile, schedule, roles, opts)
+		},
+	}
+	install.Flags().String("schedule", "", "Cron schedule (default \"30 8 * * *\")")
+	addPimActivateFlags(install)
+
+	remove := &cobra.Command{
+		Use:   "remove [profile]",
+		Short: "Remove PIM cron (specific profile, or all if omitted)",
+		Args:  cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			profile := ""
+			if len(args) == 1 {
+				profile = args[0]
+			}
+			return azprofile.CronPIMRemove(profile)
+		},
+	}
+
+	c.AddCommand(install, remove)
+	return c
+}
+
+// ── pim ──────────────────────────────────────────────────────────────────────
+
+// addPimActivateFlags registers the shared PIM activation flags onto cmd.
+// Used by both `pim activate` and `cron pim install` to keep them in sync.
+func addPimActivateFlags(cmd *cobra.Command) {
+	cmd.Flags().BoolP("all", "", false, "Activate every eligible assignment (filtered by --type / --role)")
+	cmd.Flags().StringP("type", "t", "all", "Restrict to: all | resource | role | group")
+	cmd.Flags().StringP("role", "r", "", "Role name filter / disambiguator")
+	cmd.Flags().IntP("duration", "d", azprofile.DefaultPIMDuration, "Activation duration in minutes")
+	cmd.Flags().String("reason", azprofile.DefaultPIMReason, "Reason for activation")
+	cmd.Flags().String("ticket-system", "", "Ticket system name")
+	cmd.Flags().String("ticket-number", "", "Ticket number")
+}
+
 func pimCmd() *cobra.Command {
 	c := &cobra.Command{
 		Use:   "pim",
@@ -280,10 +341,11 @@ func pimCmd() *cobra.Command {
 	activate := &cobra.Command{
 		Use:   "activate <name> [name...] | --all",
 		Short: "Activate one or more eligible role assignments",
-		Long:  "Looks up <name> across resource, role, and group eligibility. Errors if the name is ambiguous across categories or roles within a category (use --type and --role to disambiguate). Pass --all to activate every eligibility (filtered by --type / --role).",
+		Long:  "Looks up <name> across resource, role, and group eligibility. Errors if the name is ambiguous. Pass --all to activate every eligibility (filtered by --type / --role).",
 		Args:  cobra.ArbitraryArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			opts := azprofile.ActivateOptions{}
+			opts.All, _ = cmd.Flags().GetBool("all")
 			opts.Type, _ = cmd.Flags().GetString("type")
 			opts.Role, _ = cmd.Flags().GetString("role")
 			opts.DurationMin, _ = cmd.Flags().GetInt("duration")
@@ -294,23 +356,16 @@ func pimCmd() *cobra.Command {
 			opts.TicketNumber, _ = cmd.Flags().GetString("ticket-number")
 			opts.Wait, _ = cmd.Flags().GetBool("wait")
 			opts.WaitTimeout, _ = cmd.Flags().GetInt("timeout")
-			opts.All, _ = cmd.Flags().GetBool("all")
 			opts.Yes, _ = cmd.Flags().GetBool("yes")
 			return azprofile.PimActivate(args, opts)
 		},
 	}
-	activate.Flags().StringP("type", "t", "all", "Restrict lookup: all | resource | role | group")
-	activate.Flags().StringP("role", "r", "", "Role to activate when multiple exist for the same name (or as a filter with --all)")
-	activate.Flags().IntP("duration", "d", 480, "Duration in minutes")
-	activate.Flags().String("reason", "config", "Reason for activation")
+	addPimActivateFlags(activate)
 	activate.Flags().String("start-date", "", "Start date (DD/MM/YYYY); defaults to now")
 	activate.Flags().String("start-time", "", "Start time (HH:MM); defaults to now")
-	activate.Flags().String("ticket-system", "", "Ticket system name")
-	activate.Flags().String("ticket-number", "", "Ticket number")
 	activate.Flags().Bool("wait", true, "Wait for activation to complete")
 	activate.Flags().Int("timeout", 300, "Wait timeout in seconds")
-	activate.Flags().Bool("all", false, "Activate every eligible assignment (filtered by --type / --role)")
-	activate.Flags().BoolP("yes", "y", false, "Skip the confirmation prompt in --all mode")
+	activate.Flags().BoolP("yes", "y", false, "Skip confirmation prompt in --all mode")
 
 	deactivate := &cobra.Command{
 		Use:   "deactivate <name> [name...]",
@@ -330,15 +385,25 @@ func pimCmd() *cobra.Command {
 	return c
 }
 
+// ── sync ─────────────────────────────────────────────────────────────────────
+
 func syncCmd() *cobra.Command {
 	c := &cobra.Command{
 		Use:   "sync",
-		Short: "Sync a profile to/from a remote directory or via Ably pub/sub",
-		Long: `Sync a profile.
+		Short: "Sync profiles between machines via rsync or Ably pub/sub",
+		Long: `Two transport modes:
 
-Two modes:
-  rsync (default)   Copy a profile dir to/from a remote directory.
-  ably (--ably)     Publish/receive an encrypted token bundle via Ably pub/sub.
+  rsync   push/pull a profile directory to/from a local path (USB, NAS, etc.)
+  ably    publish/receive an encrypted credential bundle over Ably pub/sub
+
+Sender setup (first machine):
+  azprofile setup                        # generate key + configure Ably
+  azprofile cron refresh install         # auto-publish on every token refresh
+  azprofile sync export-key --confirm    # copy hex key to receiver
+
+Receiver setup (other machines):
+  azprofile sync join                    # import key + Ably config in one shot
+  azprofile sync subscribe               # start listening for updates
 
 Environment:
   AZPROFILE_HOME           Base directory (default: $HOME)
@@ -346,55 +411,59 @@ Environment:
   AZPROFILE_MASTER_KEY     Hex-encoded master key (overrides OS keychain)`,
 	}
 
-	var pushAbly bool
+	// ── rsync push / pull ────────────────────────────────────────────────────
 	push := &cobra.Command{
 		Use:   "push [dir] [profile]",
-		Short: "Push a profile to a remote directory (or Ably with --ably)",
+		Short: "Push a profile to a local directory via rsync",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if pushAbly {
-				if len(args) > 1 {
-					return fmt.Errorf("--ably accepts at most one positional [profile]")
-				}
-				profile := ""
-				if len(args) == 1 {
-					profile = args[0]
-				}
-				return azprofile.PublishProfile(cmd.Context(), profile)
-			}
 			if len(args) > 2 {
 				return fmt.Errorf("too many arguments")
 			}
 			return runRsyncSync("push", args)
 		},
 	}
-	push.Flags().BoolVar(&pushAbly, "ably", false, "Publish via Ably pub/sub instead of rsync")
 
-	var pullAbly bool
 	pull := &cobra.Command{
 		Use:   "pull [dir] [profile]",
-		Short: "Pull a profile from a remote directory (or Ably with --ably)",
+		Short: "Pull a profile from a local directory via rsync",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if pullAbly {
-				if len(args) > 1 {
-					return fmt.Errorf("--ably accepts at most one positional [profile]")
-				}
-				profile := ""
-				if len(args) == 1 {
-					profile = args[0]
-				}
-				return azprofile.PullOnce(cmd.Context(), profile)
-			}
 			if len(args) > 2 {
 				return fmt.Errorf("too many arguments")
 			}
 			return runRsyncSync("pull", args)
 		},
 	}
-	pull.Flags().BoolVar(&pullAbly, "ably", false, "Pull via Ably pub/sub instead of rsync")
+
+	// ── Ably publish / receive / subscribe ───────────────────────────────────
+	publish := &cobra.Command{
+		Use:   "publish [profile]",
+		Short: "Encrypt and publish the active profile to Ably (one-shot)",
+		Args:  cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			profile := ""
+			if len(args) == 1 {
+				profile = args[0]
+			}
+			return azprofile.PublishProfile(cmd.Context(), profile)
+		},
+	}
+
+	receive := &cobra.Command{
+		Use:   "receive [profile]",
+		Short: "Pull the latest update from Ably history (one-shot)",
+		Args:  cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			profile := ""
+			if len(args) == 1 {
+				profile = args[0]
+			}
+			return azprofile.PullOnce(cmd.Context(), profile)
+		},
+	}
 
 	subscribe := &cobra.Command{
 		Use:   "subscribe [profile]",
-		Short: "Long-running daemon that applies inbound Ably token updates",
+		Short: "Subscribe to Ably and apply updates as they arrive (daemon)",
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			profile := ""
@@ -405,9 +474,21 @@ Environment:
 		},
 	}
 
+	// ── join (receiver onboarding) ───────────────────────────────────────────
+	join := &cobra.Command{
+		Use:   "join",
+		Short: "Receiver setup wizard: import key and configure Ably",
+		Long: `Import the sender's encryption key (hex) and configure the Ably channel.
+Get the hex key from the sender with: azprofile sync export-key --confirm`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return azprofile.JoinWizard()
+		},
+	}
+
+	// ── key management ───────────────────────────────────────────────────────
 	keygen := &cobra.Command{
 		Use:   "keygen",
-		Short: "Generate a master key, store it in the OS keychain, print the hex",
+		Short: "Generate a new master encryption key and store it in the OS keychain",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			force, _ := cmd.Flags().GetBool("force")
 			if !force {
@@ -422,9 +503,9 @@ Environment:
 			if err := azprofile.SaveMasterKey(k); err != nil {
 				return err
 			}
-			hexKey := azprofile.KeyToHex(k)
-			fmt.Println(hexKey)
-			fmt.Fprintln(os.Stderr, "Transfer this key to other machines via a secure channel, then run: azprofile sync import-key <hex>")
+			fmt.Printf("%s%s%s Key generated. Fingerprint: %s%s%s\n",
+				ui.Green, ui.Check, ui.NC, ui.Dim, azprofile.KeyFingerprint(k), ui.NC)
+			fmt.Fprintln(os.Stderr, "To transfer to another machine: azprofile sync export-key --confirm")
 			return nil
 		},
 	}
@@ -432,20 +513,25 @@ Environment:
 
 	importKey := &cobra.Command{
 		Use:   "import-key <hex>",
-		Short: "Import a master key into the OS keychain",
+		Short: "Import a master key from hex into the OS keychain",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			k, err := azprofile.KeyFromHex(args[0])
 			if err != nil {
 				return err
 			}
-			return azprofile.SaveMasterKey(k)
+			if err := azprofile.SaveMasterKey(k); err != nil {
+				return err
+			}
+			fmt.Printf("%s%s%s Key imported. Fingerprint: %s%s%s\n",
+				ui.Green, ui.Check, ui.NC, ui.Dim, azprofile.KeyFingerprint(k), ui.NC)
+			return nil
 		},
 	}
 
 	exportKey := &cobra.Command{
 		Use:   "export-key",
-		Short: "Print the master key (requires --confirm)",
+		Short: "Print the master key as hex (requires --confirm)",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			confirm, _ := cmd.Flags().GetBool("confirm")
 			if !confirm {
@@ -463,7 +549,7 @@ Environment:
 
 	configure := &cobra.Command{
 		Use:   "configure",
-		Short: "Write the encrypted Ably sync config (.config/azprofile/config.enc)",
+		Short: "Write Ably sync config non-interactively (for automation/key rotation)",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ablyKey, _ := cmd.Flags().GetString("ably-key")
 			prefix, _ := cmd.Flags().GetString("channel-prefix")
@@ -486,13 +572,14 @@ Environment:
 
 	status := &cobra.Command{
 		Use:   "status",
-		Short: "Show non-secret sync configuration",
+		Short: "Show sync configuration and last publish/receive times",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runSyncStatus()
 		},
 	}
 
-	c.AddCommand(push, pull, subscribe, keygen, importKey, exportKey, configure, status)
+	c.AddCommand(push, pull, publish, receive, subscribe, join,
+		keygen, importKey, exportKey, configure, status)
 	return c
 }
 
@@ -512,6 +599,10 @@ func runSyncStatus() error {
 	fmt.Printf("State path:     %s\n", azprofile.StatePath())
 	fmt.Printf("Master key:     %s\n", azprofile.MasterKeySource())
 
+	if v := os.Getenv("AZPROFILE_MASTER_KEY"); v != "" {
+		fmt.Printf("%s  ⚠ AZPROFILE_MASTER_KEY env var is set and overrides the keychain key%s\n", ui.Yellow, ui.NC)
+	}
+
 	key, err := azprofile.LoadMasterKey()
 	if err != nil {
 		fmt.Printf("Status:         not configured (%s)\n", err.Error())
@@ -522,7 +613,7 @@ func runSyncStatus() error {
 	cfg, err := azprofile.LoadConfig()
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			fmt.Println("Config:         not written yet (run: azprofile sync configure ...)")
+			fmt.Println("Config:         not written yet — run: azprofile setup")
 			return nil
 		}
 		return err
@@ -531,6 +622,17 @@ func runSyncStatus() error {
 	fmt.Printf("Sender ID:      %s\n", cfg.SenderID)
 	if len(cfg.AblyAPIKey) > 8 {
 		fmt.Printf("Ably API key:   %s…(%d chars)\n", cfg.AblyAPIKey[:8], len(cfg.AblyAPIKey))
+	}
+
+	state, err := azprofile.LoadState()
+	if err == nil && (len(state.LastPublish) > 0 || len(state.LastReceive) > 0) {
+		fmt.Println()
+		for profile, t := range state.LastPublish {
+			fmt.Printf("Last published: %-20s %s\n", profile, t.Local().Format(time.RFC3339))
+		}
+		for profile, t := range state.LastReceive {
+			fmt.Printf("Last received:  %-20s %s\n", profile, t.Local().Format(time.RFC3339))
+		}
 	}
 	return nil
 }

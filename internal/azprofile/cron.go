@@ -340,11 +340,19 @@ func CronStatus() {
 		}
 	}
 	if len(refreshLines) == 0 && len(pimLines) == 0 {
-		fmt.Printf("%s-%s No crons installed. Run: azprofile cron install [profile] [schedule]\n", ui.Dim, ui.NC)
+		fmt.Printf("%s-%s No crons installed. Run: azprofile cron refresh install [profile]\n", ui.Dim, ui.NC)
 		return
 	}
+	ablyConfigured := false
+	if _, err := LoadConfig(); err == nil {
+		ablyConfigured = true
+	}
 	if len(refreshLines) > 0 {
-		fmt.Printf("%s%s%s Refresh:\n", ui.Green, ui.Check, ui.NC)
+		ablyNote := ""
+		if ablyConfigured {
+			ablyNote = " (Ably auto-publish included)"
+		}
+		fmt.Printf("%s%s%s Refresh%s:\n", ui.Green, ui.Check, ui.NC, ablyNote)
 		for _, l := range refreshLines {
 			fmt.Printf("  %s%s%s\n", ui.Dim, l, ui.NC)
 		}

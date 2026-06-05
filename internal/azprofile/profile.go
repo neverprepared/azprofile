@@ -1,6 +1,7 @@
 package azprofile
 
 import (
+	"bufio"
 	"fmt"
 	"os"
 	"os/exec"
@@ -8,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/neverprepared/azprofile/internal/ui"
+	"golang.org/x/term"
 )
 
 func GetCurrent() string {
@@ -140,7 +142,118 @@ func Use(name string) error {
 	return nil
 }
 
-func Init(name string) error {
+// SetupWizard interactively configures the master encryption key and Ably sync.
+// Steps that are already configured are skipped. Returns without prompting if
+// stdin is not a TTY.
+func SetupWizard() error {
+	if !term.IsTerminal(int(os.Stdin.Fd())) {
+		return nil
+	}
+
+	scanner := bufio.NewScanner(os.Stdin)
+	readLine := func(prompt string) string {
+		fmt.Print(prompt)
+		if !scanner.Scan() {
+			return ""
+		}
+		return strings.TrimSpace(scanner.Text())
+	}
+	readSecret := func(prompt string) (string, error) {
+		fmt.Print(prompt)
+		b, err := term.ReadPassword(int(os.Stdin.Fd()))
+		fmt.Println()
+		if err != nil {
+			return "", err
+		}
+		return strings.TrimSpace(string(b)), nil
+	}
+
+	// ── Step 1: master encryption key ────────────────────────────────────────
+	fmt.Printf("\n%s%sStep 1/2 — Encryption key%s\n", ui.Bold, ui.Blue, ui.NC)
+
+	k, keyErr := LoadMasterKey()
+	if keyErr == nil {
+		fmt.Printf("%s%s%s Master key already configured %s(fingerprint: %s)%s\n",
+			ui.Green, ui.Check, ui.NC, ui.Dim, KeyFingerprint(k), ui.NC)
+	} else {
+		fmt.Printf("%s%s%s No master key found.%s\n", ui.Yellow, ui.Arrow, ui.NC, ui.NC)
+		fmt.Printf("%s  [g] Generate a new key   [i] Import an existing hex key%s\n", ui.Dim, ui.NC)
+		choice := readLine("  Choice [g]: ")
+		if choice == "" {
+			choice = "g"
+		}
+		switch strings.ToLower(choice) {
+		case "g", "generate":
+			k, err := NewMasterKey()
+			if err != nil {
+				return fmt.Errorf("keygen: %w", err)
+			}
+			if err := SaveMasterKey(k); err != nil {
+				return fmt.Errorf("save key: %w", err)
+			}
+			fmt.Printf("%s%s%s Generated and saved. Fingerprint: %s%s%s\n",
+				ui.Green, ui.Check, ui.NC, ui.Dim, KeyFingerprint(k), ui.NC)
+			fmt.Printf("%s  Export the hex key to other machines with: azprofile sync export-key --confirm%s\n", ui.Dim, ui.NC)
+		case "i", "import":
+			hexKey, err := readSecret("  Paste hex key: ")
+			if err != nil {
+				return fmt.Errorf("read key: %w", err)
+			}
+			k, err := KeyFromHex(hexKey)
+			if err != nil {
+				return fmt.Errorf("invalid key: %w", err)
+			}
+			if err := SaveMasterKey(k); err != nil {
+				return fmt.Errorf("save key: %w", err)
+			}
+			fmt.Printf("%s%s%s Key imported. Fingerprint: %s%s%s\n",
+				ui.Green, ui.Check, ui.NC, ui.Dim, KeyFingerprint(k), ui.NC)
+		default:
+			return fmt.Errorf("unknown choice %q — expected 'g' or 'i'", choice)
+		}
+	}
+
+	// ── Step 2: Ably sync config ──────────────────────────────────────────────
+	fmt.Printf("\n%s%sStep 2/2 — Ably sync%s\n", ui.Bold, ui.Blue, ui.NC)
+
+	_, cfgErr := LoadConfig()
+	if cfgErr == nil {
+		fmt.Printf("%s%s%s Ably already configured.%s\n", ui.Green, ui.Check, ui.NC, ui.NC)
+	} else {
+		fmt.Printf("%s%s%s No Ably config found.%s\n", ui.Yellow, ui.Arrow, ui.NC, ui.NC)
+		fmt.Printf("%s  Leave blank to skip Ably setup (you can run 'azprofile sync configure' later).%s\n", ui.Dim, ui.NC)
+
+		ablyKey, err := readSecret("  Ably API key: ")
+		if err != nil {
+			return fmt.Errorf("read ably key: %w", err)
+		}
+		if ablyKey == "" {
+			fmt.Printf("%s%s%s Skipped — Ably not configured.%s\n", ui.Yellow, ui.Arrow, ui.NC, ui.NC)
+		} else {
+			prefix := readLine("  Channel prefix [azprofile]: ")
+			if prefix == "" {
+				prefix = "azprofile"
+			}
+			cur, _ := LoadConfig()
+			cfg := &SyncConfig{
+				AblyAPIKey:    ablyKey,
+				ChannelPrefix: prefix,
+			}
+			if cur != nil {
+				cfg.SenderID = cur.SenderID
+			}
+			if err := SaveConfig(cfg); err != nil {
+				return fmt.Errorf("save ably config: %w", err)
+			}
+			fmt.Printf("%s%s%s Ably configured (prefix: %s).%s\n",
+				ui.Green, ui.Check, ui.NC, prefix, ui.NC)
+		}
+	}
+
+	return nil
+}
+
+func Init(name string, login bool) error {
 	if name == "" {
 		return fmt.Errorf("Usage: azprofile init <name>")
 	}
@@ -159,15 +272,143 @@ func Init(name string) error {
 	}
 
 	fmt.Printf("%s%sInitializing profile '%s'%s\n", ui.Bold, ui.Blue, name, ui.NC)
-	fmt.Printf("%s%s%s Config dir: %s%s%s\n\n", ui.Cyan, ui.Arrow, ui.NC, ui.Dim, target, ui.NC)
-
-	if err := runAzLogin(target); err != nil {
-		return err
-	}
+	fmt.Printf("%s%s%s Config dir: %s%s%s\n", ui.Cyan, ui.Arrow, ui.NC, ui.Dim, target, ui.NC)
 
 	fmt.Printf("\n%s%s%s Profile '%s' initialized.\n", ui.Green, ui.Check, ui.NC, name)
+	if login {
+		fmt.Println()
+		if err := runAzLogin(target); err != nil {
+			return err
+		}
+	} else {
+		fmt.Printf("%s  Login with: azprofile login %s%s\n", ui.Dim, name, ui.NC)
+	}
 	fmt.Printf("%s  Switch to it with: azprofile use %s%s\n", ui.Dim, name, ui.NC)
+
+	if _, err := LoadMasterKey(); err != nil {
+		fmt.Printf("%s  First time? Run: azprofile setup%s\n", ui.Dim, ui.NC)
+	}
+
 	PublishIfConfigured(name)
+	return nil
+}
+
+// Delete removes a profile directory. If the profile is currently active the
+// symlink is removed too. Refuses if it's the only remaining profile.
+func Delete(name string) error {
+	if name == "" {
+		return fmt.Errorf("Usage: azprofile delete <name>")
+	}
+	if err := ValidateProfileName(name); err != nil {
+		return err
+	}
+	target := ProfilePath(name)
+	if fi, err := os.Stat(target); err != nil || !fi.IsDir() {
+		return fmt.Errorf("profile '%s' not found", name)
+	}
+
+	// refuse to delete the only profile
+	entries, err := os.ReadDir(ProfilesDir())
+	if err != nil {
+		return err
+	}
+	dirs := 0
+	for _, e := range entries {
+		if e.IsDir() {
+			dirs++
+		}
+	}
+	if dirs <= 1 {
+		return fmt.Errorf("cannot delete the only profile — create another first")
+	}
+
+	isActive := GetCurrent() == name
+	if isActive {
+		link := ActiveLink()
+		if err := os.Remove(link); err != nil {
+			return fmt.Errorf("remove active symlink: %w", err)
+		}
+		fmt.Printf("%s%s%s Removed active symlink (no profile active)\n", ui.Yellow, ui.Arrow, ui.NC)
+	}
+
+	if err := os.RemoveAll(target); err != nil {
+		return err
+	}
+	fmt.Printf("%s%s%s Deleted profile '%s'\n", ui.Green, ui.Check, ui.NC, name)
+	if isActive {
+		fmt.Printf("%s  Switch to another profile with: azprofile use <name>%s\n", ui.Dim, ui.NC)
+	}
+	return nil
+}
+
+// JoinWizard is the receiver-side onboarding: import a master key from hex and
+// configure Ably sync. Does not generate a new key — get the hex from the
+// sender with: azprofile sync export-key --confirm
+func JoinWizard() error {
+	if !term.IsTerminal(int(os.Stdin.Fd())) {
+		return fmt.Errorf("join wizard requires an interactive terminal")
+	}
+
+	scanner := bufio.NewScanner(os.Stdin)
+	readLine := func(prompt string) string {
+		fmt.Print(prompt)
+		if !scanner.Scan() {
+			return ""
+		}
+		return strings.TrimSpace(scanner.Text())
+	}
+	readSecret := func(prompt string) (string, error) {
+		fmt.Print(prompt)
+		b, err := term.ReadPassword(int(os.Stdin.Fd()))
+		fmt.Println()
+		if err != nil {
+			return "", err
+		}
+		return strings.TrimSpace(string(b)), nil
+	}
+
+	fmt.Printf("%s%sReceiver setup — import encryption key and configure Ably%s\n", ui.Bold, ui.Blue, ui.NC)
+	fmt.Printf("%s  Get the hex key from the sender: azprofile sync export-key --confirm%s\n\n", ui.Dim, ui.NC)
+
+	hexKey, err := readSecret("Encryption key (hex): ")
+	if err != nil {
+		return fmt.Errorf("read key: %w", err)
+	}
+	if hexKey == "" {
+		return fmt.Errorf("encryption key is required")
+	}
+	k, err := KeyFromHex(hexKey)
+	if err != nil {
+		return fmt.Errorf("invalid key: %w", err)
+	}
+	if err := SaveMasterKey(k); err != nil {
+		return fmt.Errorf("save key: %w", err)
+	}
+	fmt.Printf("%s%s%s Key imported. Fingerprint: %s%s%s\n",
+		ui.Green, ui.Check, ui.NC, ui.Dim, KeyFingerprint(k), ui.NC)
+
+	ablyKey, err := readSecret("Ably API key: ")
+	if err != nil {
+		return fmt.Errorf("read ably key: %w", err)
+	}
+	if ablyKey == "" {
+		return fmt.Errorf("Ably API key is required")
+	}
+	prefix := readLine("Channel prefix [azprofile]: ")
+	if prefix == "" {
+		prefix = "azprofile"
+	}
+	cur, _ := LoadConfig()
+	cfg := &SyncConfig{AblyAPIKey: ablyKey, ChannelPrefix: prefix}
+	if cur != nil {
+		cfg.SenderID = cur.SenderID
+	}
+	if err := SaveConfig(cfg); err != nil {
+		return fmt.Errorf("save ably config: %w", err)
+	}
+	fmt.Printf("%s%s%s Ably configured (prefix: %s).%s\n",
+		ui.Green, ui.Check, ui.NC, prefix, ui.NC)
+	fmt.Printf("\n%s%s%s Ready. Run: azprofile sync subscribe%s\n", ui.Green, ui.Check, ui.NC, ui.NC)
 	return nil
 }
 
