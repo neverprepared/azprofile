@@ -253,7 +253,7 @@ func SetupWizard() error {
 	return nil
 }
 
-func Init(name string, login bool) error {
+func Init(name string, login bool, opts LoginOptions) error {
 	if name == "" {
 		return fmt.Errorf("Usage: azprofile init <name>")
 	}
@@ -277,7 +277,7 @@ func Init(name string, login bool) error {
 	fmt.Printf("\n%s%s%s Profile '%s' initialized.\n", ui.Green, ui.Check, ui.NC, name)
 	if login {
 		fmt.Println()
-		if err := runAzLogin(target); err != nil {
+		if err := runAzLogin(target, opts); err != nil {
 			return err
 		}
 	} else {
@@ -412,7 +412,7 @@ func JoinWizard() error {
 	return nil
 }
 
-func Login(name string) error {
+func Login(name string, opts LoginOptions) error {
 	if name == "" {
 		name = GetCurrent()
 		if name == "(none)" || name == "(unmigrated directory)" {
@@ -430,7 +430,7 @@ func Login(name string) error {
 	fmt.Printf("%s%sRe-authenticating profile '%s'%s\n", ui.Bold, ui.Blue, name, ui.NC)
 	fmt.Printf("%s%s%s Config dir: %s%s%s\n\n", ui.Cyan, ui.Arrow, ui.NC, ui.Dim, target, ui.NC)
 
-	if err := runAzLogin(target); err != nil {
+	if err := runAzLogin(target, opts); err != nil {
 		return err
 	}
 
@@ -439,8 +439,22 @@ func Login(name string) error {
 	return nil
 }
 
-func runAzLogin(configDir string) error {
-	cmd := exec.Command("az", "login")
+// LoginOptions are passthrough flags forwarded to `az login`. Zero value
+// (empty fields) reproduces a plain `az login`.
+type LoginOptions struct {
+	Tenant string // --tenant
+	Scope  string // --scope, e.g. https://graph.microsoft.com/.default
+}
+
+func runAzLogin(configDir string, opts LoginOptions) error {
+	args := []string{"login"}
+	if opts.Tenant != "" {
+		args = append(args, "--tenant", opts.Tenant)
+	}
+	if opts.Scope != "" {
+		args = append(args, "--scope", opts.Scope)
+	}
+	cmd := exec.Command("az", args...)
 	cmd.Env = append(os.Environ(), "AZURE_CONFIG_DIR="+configDir)
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
