@@ -78,15 +78,18 @@ func currentCmd() *cobra.Command {
 
 func initCmd() *cobra.Command {
 	var login bool
+	var opts azprofile.LoginOptions
 	cmd := &cobra.Command{
 		Use:   "init <name>",
 		Short: "Create a new profile",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return azprofile.Init(args[0], login)
+			return azprofile.Init(args[0], login, opts)
 		},
 	}
 	cmd.Flags().BoolVar(&login, "login", false, "Run az login after creating the profile")
+	cmd.Flags().StringVar(&opts.Tenant, "tenant", "", "Tenant to authenticate against (az login --tenant)")
+	cmd.Flags().StringVar(&opts.Scope, "scope", "", "Scope to request, e.g. https://graph.microsoft.com/.default (az login --scope)")
 	return cmd
 }
 
@@ -102,7 +105,8 @@ func deleteCmd() *cobra.Command {
 }
 
 func loginCmd() *cobra.Command {
-	return &cobra.Command{
+	var opts azprofile.LoginOptions
+	cmd := &cobra.Command{
 		Use:   "login [name]",
 		Short: "Re-authenticate a profile (default: active)",
 		Args:  cobra.MaximumNArgs(1),
@@ -111,9 +115,12 @@ func loginCmd() *cobra.Command {
 			if len(args) == 1 {
 				name = args[0]
 			}
-			return azprofile.Login(name)
+			return azprofile.Login(name, opts)
 		},
 	}
+	cmd.Flags().StringVar(&opts.Tenant, "tenant", "", "Tenant to authenticate against (az login --tenant)")
+	cmd.Flags().StringVar(&opts.Scope, "scope", "", "Scope to request, e.g. https://graph.microsoft.com/.default (az login --scope)")
+	return cmd
 }
 
 func whoamiCmd() *cobra.Command {
