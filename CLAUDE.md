@@ -27,7 +27,8 @@ internal/azprofile/          All behavior; each file owns one command group
                              SetupWizard, JoinWizard, legacy ~/.azure migration
   refresh.go                 az account get-access-token per profile; EnsureCronPath
   cron.go                    crontab -l / crontab - editing, tagged lines
-  doctor.go                  environment preflight checks
+  doctor.go                  environment preflight checks (still warns when the
+                             external az-pim-cli is absent — stale, PIM is native)
   update.go                  GitHub Releases self-updater (SHA256 + atomic replace)
   crypto.go                  AES-256-GCM helpers, key gen/hex/fingerprint
   keychain.go                master key: AZPROFILE_MASTER_KEY env > OS keychain
@@ -61,7 +62,9 @@ Key mechanics:
 - **Cron lines** are tagged (`# azprofile-refresh:<profile>`,
   `# azprofile-pim:<profile>`) and rewritten by filtering the tag out and
   re-appending. Absolute `os.Executable()` path, `${WORKSPACE_HOME:-$HOME}`
-  resolved at run time.
+  resolved at run time. When `WORKSPACE_HOME` is set in the installing shell,
+  a `WORKSPACE_HOME=<value>` line is written at the top of the crontab, since
+  cron does not inherit it.
 - **PIM auth** uses `az account get-access-token` for both the ARM scope and
   `https://api.azrbac.mspim.azure.com`, so the active azprofile identity is the
   principal. Three categories: `resource` (ARM), `role` (Entra `aadroles`),
@@ -86,7 +89,7 @@ directly:
 go build ./...
 go vet ./...
 go test ./...             # tests: internal/azprofile, internal/azprofile/pim
-gofmt -l .                # currently reports pre-existing unformatted files
+gofmt -l .                # pre-existing: envelope.go, syncconfig.go, version.go
 ```
 
 Run:
